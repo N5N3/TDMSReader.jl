@@ -139,17 +139,24 @@ function readprop!(props, s::IO)
     end
 end
 
-function readrawdata!(objects::NTuple{N,Chunk}, nbytes::Integer, s::IO) where N
-    n = 0
-    while n < nbytes && !eof(s)
-        for x in objects
-            T = eltype(x.data)
-            for i = 1:x.nsamples
-                push!(x.data, read(s, T))
-                n += sizeof(T)
-            end
-        end
-    end
+# function readrawdata!(objects::NTuple{N,Chunk}, nbytes::Integer, s::IO) where N
+#     n = 0
+#     while n < nbytes && !eof(s)
+#         for x in objects
+#             T = eltype(x.data)
+#             for i = 1:x.nsamples
+#                 push!(x.data, read(s, T))
+#                 n += sizeof(T)
+#             end
+#         end
+#     end
+# end
+
+_rest(s::IO) = begin
+    p = position(s)
+    rest = position(seekend(s)) - p
+    seek(s, p)
+    return rest
 end
 
 function readrawdata!(objdict::ObjDict, totalbytes::Integer, s::IO)
@@ -157,19 +164,22 @@ function readrawdata!(objdict::ObjDict, totalbytes::Integer, s::IO)
     nbytes = sum(current) do val
         sizeof(eltype(val.data)) * val.nsamples
     end
+    totalbytes = min(totalbytes, _rest(s))
     batch::Int = fld(totalbytes, nbytes)
     nbytes * batch == totalbytes || throw("layout error")
+    batch == 0 && return
     # Accelerate via preallocation
-    for val in current
-        resize!(val.data, val.nsamples * batch)
-    end
-    for i in 1:batch
-        for val in current
-            v′ = @view reshape(val.data, :, batch)[:, i]
-read!(s, v′)
+    datas = foreach(current) do val
+        resize!(val.data, length(val.data) + val.nsamples * batch)
+    end 
+    for i in batch-1:-1:0
+        foreach(current) do val
+            n = Int(val.nsamples)
+            ind = length(val.data) .+ (1 - n:0)
+            @views read!(s, val.data[ind .- i * n])
         end
     end
-    end
+end
 
 function seekalign(s::IO)
     x = position(s)
