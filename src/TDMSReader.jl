@@ -1,143 +1,123 @@
 module TDMSReader
 
-import BitOperations: bget
-import DataStructures: OrderedDict
+import BitOperations:bget
+import DataStructures:OrderedDict
 
 include("types.jl")
 
-const _example_tdms=(@__DIR__) * "\\..\\test\\example_files\\reference_file.tdms"
-const _example_incremental=[(@__DIR__) * "\\..\\test\\example_files\\incremental_test_$i.tdms" for i=1:6]
-const _example_DAQmx=(@__DIR__) * "\\..\\test\\example_files\\DAQmx example.tdms"
+const _example_tdms = (@__DIR__) * "\\..\\test\\example_files\\reference_file.tdms"
+const _example_incremental = [(@__DIR__) * "\\..\\test\\example_files\\incremental_test_$i.tdms" for i = 1:6]
+const _example_DAQmx = (@__DIR__) * "\\..\\test\\example_files\\DAQmx example.tdms"
 
 export readtdms
 
 readtdms() = readtdms(_example_tdms)
 function readtdms(fn::AbstractString)
     s = open(fn)
-    f=File()
-    objdict=ObjDict()
+    f = File()
+    objdict = ObjDict()
     while !eof(s)
-        (toc,nextsegmentoffset,rawdataoffset)=readleadin(s)
-        if toc.kTocNewObjList
-            empty!(objdict.current)
-        end
-        if toc.kTocMetaData
-            readmetadata!(f, objdict, s)
-        end
-        if toc.kTocRawData
-            readrawdata!(objdict, nextsegmentoffset-rawdataoffset, s)
-        end
+        temp = readleadin(s)
+        isnothing(temp) && break
+        toc, nextsegmentoffset, rawdataoffset = temp
+        toc.kTocNewObjList && empty!(objdict.current)
+        toc.kTocMetaData && readmetadata!(f, objdict, s)
+        toc.kTocRawData && readrawdata!(objdict, nextsegmentoffset - rawdataoffset, s)
     end
     close(s)
     f
 end
 
 function readseginfo(fn::AbstractString)
-    #STILL COULD USE SOME WORK HERE TO MAKE IT CLEAN AND NEAT
+    # STILL COULD USE SOME WORK HERE TO MAKE IT CLEAN AND NEAT
     s = open(fn)
-    f=File()
-    objdict=ObjDict()
+    f = File()
+    objdict = ObjDict()
     tdmsSeg = OrderedDict()
-    lead_size = 28 #lead in is 28 bytes
+    lead_size = 28 # lead in is 28 bytes
     segCnt = 0
     while !eof(s)
         startPos = position(s)
-        (toc,nextsegmentoffset,rawdataoffset)=readleadin(s)
+        temp = readleadin(s)
+        isnothing(temp) && break
+        toc, nextsegmentoffset, rawdataoffset = temp
         if toc.kTocNewObjList
             empty!(objdict.current)
         end
 
         nobj = read(s, UInt32)
-        seek(s,startPos+lead_size)
+        seek(s, startPos + lead_size)
         if toc.kTocMetaData
             readmetadata!(f, objdict, s)
         end
         if toc.kTocRawData
-            #readrawdata!(objdict, nextsegmentoffset-rawdataoffset, s)
+            # readrawdata!(objdict, nextsegmentoffset-rawdataoffset, s)
         end
-        nextsegmentPos = Int64(startPos+nextsegmentoffset+lead_size)
-        dataPos = Int64(startPos+lead_size+rawdataoffset)
-        rawdatasize = nextsegmentoffset-rawdataoffset
-        tdmsTmp = SegInfo(startPos,toc,nextsegmentPos,dataPos,nobj,rawdatasize)
-        segCnt +=1
-        tdmsSeg[string("seg",segCnt)] = tdmsTmp
-        seek(s,nextsegmentPos)
+        nextsegmentPos = Int64(startPos + nextsegmentoffset + lead_size)
+        dataPos = Int64(startPos + lead_size + rawdataoffset)
+        rawdatasize = nextsegmentoffset - rawdataoffset
+        tdmsTmp = SegInfo(startPos, toc, nextsegmentPos, dataPos, nobj, rawdatasize)
+        segCnt += 1
+        tdmsSeg[string("seg", segCnt)] = tdmsTmp
+        seek(s, nextsegmentPos)
     end
     close(s)
-    return f,objdict,tdmsSeg
+    return f, objdict, tdmsSeg
 end
 
 function readleadin(s::IO)
-    @assert ntoh(read(s, UInt32)) == 0x54_44_53_6D
-    toc=ToC(ltoh(read(s, UInt32)))
+    ntoh(read(s, UInt32)) == 0x54_44_53_6D || return nothing
+    toc = ToC(ltoh(read(s, UInt32)))
     toc.kTocBigEndian && throw(ErrorException("Big Endian files not supported"))
     read(s, UInt32) == 4713 || throw(ErrorException("File not recongnized as TDMS formatted file"))
-
-    return (toc=toc,nextsegmentoffset=read(s, UInt64),rawdataoffset=read(s, UInt64),)
+    (toc = toc, nextsegmentoffset = read(s, UInt64), rawdataoffset = read(s, UInt64),)
 end
 
 function readmetadata!(f::File, objdict::ObjDict, s::IO)
     n = read(s, UInt32)
-    for i=1:n
+    for i = 1:n
         readobj!(f, objdict, s)
     end
 end
 
+read(s::IO, ::Type{T}) where {T} = Base.read(s, T)
+read(s::IO, ::Type{String}) where {T} = String(Base.read(s, read(s, UInt32)))
 function readobj!(f::File, objdict::ObjDict, s::IO)
-    b=UInt8[]
-    readbytes!(s, b, read(s, UInt32))
-    objpath = String(b); empty!(b)
+    objpath = read(s, String)
+    println(objpath)
     # @info "Read @ position $(hexstring(position(s)))"
-    rawdata=read(s, UInt32)
-    hasrawdata=false
-    hasnewchunk=false
-    if rawdata==0xFF_FF_FF_FF #No Raw Data
-    elseif rawdata==zero(UInt32) #Keep Chunk layout
+    rawdata = read(s, UInt32)
+    hasrawdata = hasnewchunk = false
+    if rawdata == 0xFF_FF_FF_FF # No Raw Data
+    elseif iszero(rawdata) # Keep Chunk layout
         haskey(objdict.full, objpath) || throw(ErrorException("Previous Segment Missing"))
-        hasrawdata=true
-    elseif rawdata==0x00_00_12_69 || rawdata==0x00_00_13_69
+        hasrawdata = true
+    elseif rawdata in (0x00_00_12_69, 0x00_00_13_69)
         readDAQmx(s::IO, rawdata)
         throw(ErrorException("Not Implemented"))
     else
-        hasrawdata=true
-        hasnewchunk=true
-        T=tdsTypes[read(s, UInt32)]
-        ( T <: TDMSUnimplementedType ) && throw(ErrorException("TDMS Data Type of $T is not supported"))
-        read(s,UInt32)==1 || throw(ErrorException("TDMS Array Dimension is not 1"))
-        n=read(s,UInt64)
-        if T == String
-            throw(ErrorException("Need Functionality to Read String as raw data"))
-        end
+        hasrawdata = hasnewchunk = true
+        T = tdsTypes[read(s, UInt32)]
+        T <: TDMSUnimplementedType && throw(ErrorException("TDMS Data Type of $T is not supported"))
+        T == String && throw(ErrorException("Need Functionality to Read String as raw data"))
+        read(s, UInt32) == 1 || throw(ErrorException("TDMS Array Dimension is not 1"))
+        n = read(s, UInt64)
     end
 
-    if objpath=="/"
+    if objpath == "/"
         hasrawdata && throw(ErrorException("TDMS root should not have raw data"))
-        props=f.props
-        readprop!(props,s)
+        readprop!(f.props, s)
     else
-        m=match(r"\/'(.+?)'(?:\/'(.+)')?", objpath)
-        isnothing(m.captures) && throw(ErrorException("Object Path $objpath is malformed"))
-        group,channel=m.captures[1:2]
-        g=if haskey(f.groups, group)
-            f[group]
-        else
-            get!(f.groups,group,Group())
-        end
+        m = match(r"\/'(.+?)'(?:\/'(.+)')?", objpath)
+        isnothing(m) && throw(ErrorException("Object Path $objpath is malformed"))
+        group, channel = m.captures
+        g = get!(Returns(Group()), f, group)
         if isnothing(channel) # Is a Group
             hasrawdata && throw(ErrorException("TDMS Group should not have raw data"))
-            readprop!(g.props,s)
+            readprop!(g.props, s)
         else # Is  a Channel
-            if haskey(g.channels,channel)
-                if hasnewchunk && eltype(g[channel].data)==Nothing #need to replace existing channel if created without having data
-                    setindex!(g.channels,TDMSReader.Channel{T}(g[channel].props),channel) #convert existing channel
-                end
-                chan = g[channel]
-            else
-                chan=if hasrawdata
-                    get!(g.channels, channel, TDMSReader.Channel{T}())
-                else
-                    get!(g.channels, channel, TDMSReader.Channel{Nothing}())
-                end
+            chan = get!(g, channel) do
+                hasrawdata ? Channel{T}() : Channel{Nothing}()
             end
             readprop!(chan.props, s)
         end
@@ -145,27 +125,17 @@ function readobj!(f::File, objdict::ObjDict, s::IO)
 
     if hasrawdata
         if hasnewchunk
-            objdict.full[objpath]=Chunk{T}(chan.data,n)
+            objdict.full[objpath] = Chunk{T}(chan.data, n)
         end
-        objdict.current[objpath]=objdict.full[objpath]
+        objdict.current[objpath] = objdict.full[objpath]
     end
 end
 
 function readprop!(props, s::IO)
-    b=UInt8[]
-    n=read(s,UInt32)
-    for i=1:n
-        readbytes!(s, b, read(s, UInt32))
-        propname = String(b); empty!(b)
-        T = tdsTypes[read(s,UInt32)]
-        if T==String
-            readbytes!(s, b, read(s, UInt32))
-            props[propname] = String(b)
-            empty!(b)
-        else
-            propval=read(s,T)
-            props[propname]=propval
-        end
+    for i = 1:read(s, UInt32)
+        propname = read(s, String)
+        T = tdsTypes[read(s, UInt32)]
+        props[propname] = read(s, T)
     end
 end
 
@@ -174,43 +144,44 @@ function readrawdata!(objects::NTuple{N,Chunk}, nbytes::Integer, s::IO) where N
     while n < nbytes && !eof(s)
         for x in objects
             T = eltype(x.data)
-            for i=1:x.nsamples
-                push!(x.data, read(s,T))
+            for i = 1:x.nsamples
+                push!(x.data, read(s, T))
                 n += sizeof(T)
             end
         end
     end
-    return nothing
 end
 
-function readrawdata!(objdict::ObjDict, nbytes::Integer, s::IO)
-    n = 0
-    while n < nbytes && !eof(s)
-        for (key,val) in objdict.current
-            n += readchunk!(val.data, val.nsamples, s)
+function readrawdata!(objdict::ObjDict, totalbytes::Integer, s::IO)
+    current = values(objdict.current)
+    nbytes = sum(current) do val
+        sizeof(eltype(val.data)) * val.nsamples
+    end
+    batch::Int = fld(totalbytes, nbytes)
+    nbytes * batch == totalbytes || throw("layout error")
+    # Accelerate via preallocation
+    for val in current
+        resize!(val.data, val.nsamples * batch)
+    end
+    for i in 1:batch
+        for val in current
+            v′ = @view reshape(val.data, :, batch)[:, i]
+read!(s, v′)
         end
     end
-    return nothing
-end
-
-function readchunk!(v::Vector{T}, n::Integer, s::IO) where {T}
-    for i = 1:n
-        push!(v, read(s,T))
     end
-    n*sizeof(T)
-end
 
 function seekalign(s::IO)
     x = position(s)
     mask = typeof(x)(0b11)
-    seek(s, ifelse(x & mask > 0,x  & ~mask + 4, x))
+    seek(s, ifelse(x & mask > 0, x  & ~mask + 4, x))
 end
-
+    
 function readDAQmx(s::IO, id)
     @info "Read DAQmc Raw Data @ $(hexstring(id))"
     T = tdsTypes[read(s, UInt32)]
     @info "Data type $T"
-    read(s, UInt32)==1 || throw(ErrorException("TDMS Array Dimension is not 1"))
+    read(s, UInt32) == 1 || throw(ErrorException("TDMS Array Dimension is not 1"))
     chunksize = read(s, UInt64)
     @info "Chunk size = $chunksize"
 
@@ -220,7 +191,7 @@ function readDAQmx(s::IO, id)
     rawbufferindex = read(s, UInt32)
     rawbyteoffset = read(s, UInt32)
     sampleformatbitmap = read(s, UInt32)
-    scaleid = read(s,UInt32)
+    scaleid = read(s, UInt32)
     @info "Vector Size = $vectorsize"
     @info "DAQmx data type = $V"
     @info "Raw Buffer Index = $rawbufferindex"
@@ -234,8 +205,8 @@ function readDAQmx(s::IO, id)
 
 end
 
-function hexstring(x::Integer)
-    "0x$(lpad(string(x,base=16),8,'0'))"
+    function hexstring(x::Integer)
+    "0x$(lpad(string(x, base=16), 8, '0'))"
 end
 
 end # module

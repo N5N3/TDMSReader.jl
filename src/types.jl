@@ -1,6 +1,6 @@
 import Dates: Nanosecond, Second
 import TimesDates: TimeDate
-import Base: ==
+import Base: ==, +, -
 
 abstract type TDMSUnimplementedType end
 struct tdsTypeVoid <: TDMSUnimplementedType end
@@ -20,12 +20,12 @@ function TimeDate(x::TimeStamp)
     ns = round(x.fractions*(2.0^-64)*1e9)
     epoch + Second(x.seconds) + Nanosecond(ns)
 end
-function Base.:+(x::T,y::T) where {T<:TimeStamp}
+function +(x::T,y::T) where {T<:TimeStamp}
     s = x.seconds + y.seconds
     r,f = Base.Checked.add_with_overflow(x.fractions, y.fractions)
     f ? TimeStamp(s+1,r) : TimeStamp(s,r)
 end
-function Base.:-(x::T,y::T) where {T<:TimeStamp}
+function -(x::T,y::T) where {T<:TimeStamp}
     s = x.seconds - y.seconds
     r,f = Base.Checked.sub_with_overflow(x.fractions, y.fractions)
     f ? TimeStamp(s-1,r) : TimeStamp(s,r)
@@ -34,7 +34,7 @@ Base.show(io::IO,ts::TimeStamp) = show(io,TimeDate(ts))
 Base.show(ts::TimeStamp) = show(TimeDate(ts))
 
 
-function Base.:read(s::IO, ::Type{TimeStamp})
+function Base.read(s::IO, ::Type{TimeStamp})
     fractions=read(s,UInt64)
     seconds=read(s, Int64)
     TimeStamp(seconds,fractions)
@@ -55,16 +55,7 @@ struct ToC
     kTocNewObjList::Bool
 end
 
-function ToC(a::UInt32)
-    ToC(
-        bget(a,1),
-        bget(a,3),
-        bget(a,7),
-        bget(a,5),
-        bget(a,6),
-        bget(a,2)
-    )
-end
+ToC(a::UInt32) = ToC(bget.(a, (1,3,7,5,6,2))...)
 
 struct Channel{T}
     data::Vector{T}
@@ -81,9 +72,11 @@ struct Group
 
     Group()= new(OrderedDict{String,Channel}(),OrderedDict{String,Any}())
 end
-Base.:haskey(h::Group, key)=haskey(h.channels, key)
-Base.:getkey(h::Group, key)=haskey(h.channels, key)
-Base.:keys(a::Group)=keys(a.channels)
+Base.haskey(h::Group, key) = haskey(h.channels, key)
+Base.getkey(h::Group, key, default) = getkey(h.channels, key, default)
+Base.get!(h::Group, key, default) = get!(h.channels, key, default)
+Base.get!(f::Union{Function, Type}, h::Group, key) = get!(f, h.channels, key)
+Base.keys(a::Group) = keys(a.channels)
 ==(a::Group,b::Group) = (a.props == b.props) && (a.channels == b.channels)
 
 struct File
@@ -92,9 +85,11 @@ struct File
 
     File() = new(OrderedDict{String,Group}(),OrderedDict{String,Any}())
 end
-Base.:haskey(h::File, key)=haskey(h.groups, key)
-Base.:getkey(h::File, key)=haskey(h.groups, key)
-Base.:keys(a::File)=keys(a.groups)
+Base.haskey(h::File, key) = haskey(h.groups, key)
+Base.getkey(h::File, key, default) = getkey(h.groups, key, default)
+Base.get!(h::File, key, default) = get!(h.groups, key, default)
+Base.get!(f::Union{Function, Type}, h::File, key) = get!(f, h.groups, key)
+Base.keys(a::File) = keys(a.groups)
 ==(a::File,b::File) = (a.props == b.props) && (a.groups == b.groups)
 
 struct Chunk{T}
@@ -109,7 +104,7 @@ struct ObjDict
     ObjDict() = new(OrderedDict{String,Chunk}(),OrderedDict{String,Chunk}())
 end
 
-function Base.:getindex(f::File, group::Union{Integer,AbstractString}, channel::Nothing=nothing)
+function Base.getindex(f::File, group::Union{Integer,AbstractString}, channel::Nothing=nothing)
     if group isa Integer
         k=collect(keys(f.groups))[group]
         f.groups[k]
@@ -119,7 +114,7 @@ function Base.:getindex(f::File, group::Union{Integer,AbstractString}, channel::
 end
 
 
-function Base.:getindex(f::File, group::Union{Integer,AbstractString}, channel::Union{Integer,AbstractString})
+function Base.getindex(f::File, group::Union{Integer,AbstractString}, channel::Union{Integer,AbstractString})
     if group isa Integer
         k=collect(keys(f.groups))[group]
         f.groups[k][channel]
@@ -128,7 +123,7 @@ function Base.:getindex(f::File, group::Union{Integer,AbstractString}, channel::
     end
 end
 
-function Base.:getindex(g::Group, channel::Union{Integer,AbstractString})
+function Base.getindex(g::Group, channel::Union{Integer,AbstractString})
     if channel isa Integer
         k=collect(keys(g.channels))[channel]
         g.channels[k]
