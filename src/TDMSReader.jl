@@ -21,52 +21,21 @@ function readtdms(fn::AbstractString)
         isnothing(temp) && break
         toc, nextsegmentoffset, rawdataoffset = temp
         toc.kTocNewObjList && empty!(objdict.current)
+        meta_start = position(s)
         toc.kTocMetaData && readmetadata!(f, objdict, s)
-        toc.kTocRawData && readrawdata!(objdict, nextsegmentoffset - rawdataoffset, s)
+        raw_len = nextsegmentoffset - rawdataoffset
+        toc.kTocRawData && raw_len > 0 && readrawdata!(objdict, raw_len, seek(s, meta_start + rawdataoffset))
+        seek(s, meta_start + nextsegmentoffset)
     end
     close(s)
     f
 end
 
-function readseginfo(fn::AbstractString)
-    # STILL COULD USE SOME WORK HERE TO MAKE IT CLEAN AND NEAT
-    s = open(fn)
-    f = File()
-    objdict = ObjDict()
-    tdmsSeg = OrderedDict()
-    lead_size = 28 # lead in is 28 bytes
-    segCnt = 0
-    while !eof(s)
-        startPos = position(s)
-        temp = readleadin(s)
-        isnothing(temp) && break
-        toc, nextsegmentoffset, rawdataoffset = temp
-        if toc.kTocNewObjList
-            empty!(objdict.current)
-        end
-
-        nobj = read(s, UInt32)
-        seek(s, startPos + lead_size)
-        if toc.kTocMetaData
-            readmetadata!(f, objdict, s)
-        end
-        if toc.kTocRawData
-            # readrawdata!(objdict, nextsegmentoffset-rawdataoffset, s)
-        end
-        nextsegmentPos = Int64(startPos + nextsegmentoffset + lead_size)
-        dataPos = Int64(startPos + lead_size + rawdataoffset)
-        rawdatasize = nextsegmentoffset - rawdataoffset
-        tdmsTmp = SegInfo(startPos, toc, nextsegmentPos, dataPos, nobj, rawdatasize)
-        segCnt += 1
-        tdmsSeg[string("seg", segCnt)] = tdmsTmp
-        seek(s, nextsegmentPos)
-    end
-    close(s)
-    return f, objdict, tdmsSeg
-end
-
 function readleadin(s::IO)
-    ntoh(read(s, UInt32)) == 0x54_44_53_6D || return nothing
+    if ntoh(read(s, UInt32)) != 0x5444_536D
+        @warn "head mismatch"
+        return nothing
+    end
     toc = ToC(ltoh(read(s, UInt32)))
     toc.kTocBigEndian && throw(ErrorException("Big Endian files not supported"))
     read(s, UInt32) == 4713 || throw(ErrorException("File not recongnized as TDMS formatted file"))
@@ -102,6 +71,7 @@ function readobj!(f::File, objdict::ObjDict, s::IO)
         T == String && throw(ErrorException("Need Functionality to Read String as raw data"))
         read(s, UInt32) == 1 || throw(ErrorException("TDMS Array Dimension is not 1"))
         n = read(s, UInt64)
+        println("rawtype:", T, ", len:", n)
     end
 
     if objpath == "/"
@@ -122,7 +92,6 @@ function readobj!(f::File, objdict::ObjDict, s::IO)
             readprop!(chan.props, s)
         end
     end
-
     if hasrawdata
         if hasnewchunk
             objdict.full[objpath] = Chunk{T}(chan.data, n)
@@ -139,35 +108,13 @@ function readprop!(props, s::IO)
     end
 end
 
-# function readrawdata!(objects::NTuple{N,Chunk}, nbytes::Integer, s::IO) where N
-#     n = 0
-#     while n < nbytes && !eof(s)
-#         for x in objects
-#             T = eltype(x.data)
-#             for i = 1:x.nsamples
-#                 push!(x.data, read(s, T))
-#                 n += sizeof(T)
-#             end
-#         end
-#     end
-# end
-
-_rest(s::IO) = begin
-    p = position(s)
-    rest = position(seekend(s)) - p
-    seek(s, p)
-    return rest
-end
-
 function readrawdata!(objdict::ObjDict, totalbytes::Integer, s::IO)
     current = values(objdict.current)
     nbytes = sum(current) do val
         sizeof(eltype(val.data)) * val.nsamples
     end
-    totalbytes = min(totalbytes, _rest(s))
     batch::Int = fld(totalbytes, nbytes)
     nbytes * batch == totalbytes || throw("layout error")
-    batch == 0 && return
     # Accelerate via preallocation
     datas = foreach(current) do val
         resize!(val.data, length(val.data) + val.nsamples * batch)
@@ -217,6 +164,43 @@ end
 
     function hexstring(x::Integer)
     "0x$(lpad(string(x, base=16), 8, '0'))"
+end
+
+function readseginfo(fn::AbstractString)
+    # STILL COULD USE SOME WORK HERE TO MAKE IT CLEAN AND NEAT
+    s = open(fn)
+    f = File()
+    objdict = ObjDict()
+    tdmsSeg = OrderedDict()
+    lead_size = 28 # lead in is 28 bytes
+    segCnt = 0
+    while !eof(s)
+        startPos = position(s)
+        temp = readleadin(s)
+        isnothing(temp) && break
+        toc, nextsegmentoffset, rawdataoffset = temp
+        if toc.kTocNewObjList
+            empty!(objdict.current)
+        end
+
+        nobj = read(s, UInt32)
+        seek(s, startPos + lead_size)
+        if toc.kTocMetaData
+            readmetadata!(f, objdict, s)
+        end
+        if toc.kTocRawData
+            # readrawdata!(objdict, nextsegmentoffset-rawdataoffset, s)
+        end
+        nextsegmentPos = Int64(startPos + nextsegmentoffset + lead_size)
+        dataPos = Int64(startPos + lead_size + rawdataoffset)
+        rawdatasize = nextsegmentoffset - rawdataoffset
+        tdmsTmp = SegInfo(startPos, toc, nextsegmentPos, dataPos, nobj, rawdatasize)
+        segCnt += 1
+        tdmsSeg[string("seg", segCnt)] = tdmsTmp
+        seek(s, nextsegmentPos)
+    end
+    close(s)
+    return f, objdict, tdmsSeg
 end
 
 end # module
